@@ -1,0 +1,77 @@
+ <!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#000000">
+  <title>Bingo / Play With Bot</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <a class="wordmark" href="." aria-label="Bingo home">BINGO<span>/</span>25</a>
+      <nav class="main-nav" aria-label="Main navigation">
+        <button class="nav-button active" data-view="home" type="button">HOME</button>
+        <button class="nav-button" data-view="play" type="button">PLAY</button>
+        <button class="nav-button" data-view="profile" type="button">PROFILE</button>
+      </nav>
+      <div class="status" aria-live="polite"><span class="status-dot" aria-hidden="true"></span><span id="status-label">Choose a game mode</span></div>
+    </header>
+
+    <section class="hero" aria-labelledby="page-title">
+      <p class="eyebrow">Indian bingo / versus mode</p>
+      <h1 id="page-title">BINGO</h1>
+      <p class="intro">Read the board. Chase the word.</p>
+    </section>
+
+    <section id="mode-view" class="mode-view" aria-labelledby="mode-title">
+      <p class="section-number">01 / Choose your match</p>
+      <h2 id="mode-title">How do you want to play?</h2>
+      <div class="mode-actions">
+        <button id="bot-mode-button" class="mode-button mode-button-primary" type="button"><span>PLAY WITH BOT</span><small>Strategic opponent</small><b aria-hidden="true">↗</b></button>
+        <button id="friend-mode-button" class="mode-button" type="button"><span>PLAY WITH FRIEND</span><small>Local two-player mode</small><b aria-hidden="true">+</b></button>
+      </div>
+      <p id="mode-message" class="hint">Choose a mode to begin.</p>
+    </section>
+
+    <section id="auth-view" class="account-view" aria-labelledby="auth-title" hidden>
+      <p class="section-number">Account / Welcome</p>
+      <h2 id="auth-title">Keep your Bingo identity.</h2>
+      <p class="account-copy">Sign in to save your profile, connect with friends, and prepare for online play.</p>
+      <button id="google-signin-button" class="google-button" type="button"><span class="google-mark" aria-hidden="true">G</span> Continue with Google</button>
+      <p id="auth-message" class="hint">Demo account mode is ready. Connect Firebase OAuth for production Google authentication.</p>
+    </section>
+
+    <section id="username-view" class="account-view" aria-labelledby="username-title" hidden>
+      <p class="section-number">First login / Choose a name</p>
+      <h2 id="username-title">Make it yours.</h2>
+      <form id="username-form" class="account-form">
+        <label for="username-input">Unique username</label>
+        <input id="username-input" name="username" pattern="[A-Za-z0-9_]{3,20}" minlength="3" maxlength="20" required placeholder="dilip_123" autocomplete="username">
+        <p id="username-message" class="hint">3–20 letters, numbers, or underscores.</p>
+        <button class="button button-primary" type="submit">Create profile <span aria-hidden="true">↗</span></button>
+      </form>
+    </section>
+
+    <section id="profile-view" class="profile-view" aria-labelledby="profile-title" hidden>
+      <div class="profile-head"><div><p class="section-number">Account / Your space</p><h2 id="profile-title">PROFILE</h2></div><button id="logout-button" class="button button-secondary" type="button">LOGOUT</button></div>
+      <div class="profile-grid">
+        <article class="profile-card identity-card"><div id="profile-avatar" class="profile-avatar" aria-hidden="true"></div><h3 id="profile-display-name">Guest</h3><p id="profile-username">@username</p><p class="uid-line">UID: <strong id="profile-uid">BNG-000000</strong> <button id="copy-uid-button" class="text-button" type="button">COPY</button></p></article>
+        <article class="profile-card"><p class="section-number">Online game stats</p><div class="stats-grid"><div><strong id="stat-played">0</strong><span>Games played</span></div><div><strong id="stat-wins">0</strong><span>Games won</span></div><div><strong id="stat-losses">0</strong><span>Games lost</span></div><div><strong id="stat-rate">0%</strong><span>Win rate</span></div><div><strong id="stat-current">0</strong><span>Current streak</span></div><div><strong id="stat-highest">0</strong><span>Highest streak</span></div></div></article>
+      </div>
+      <div class="social-grid"><article class="social-card"><div class="panel-title"><h3>MY FRIENDS</h3><span id="friend-count">0</span></div><div id="friends-list" class="social-list"><p class="empty-state">No friends yet.</p></div></article><article class="social-card"><div class="panel-title"><h3>REQUESTS</h3><span id="request-count">0</span></div><div id="requests-list" class="social-list"><p class="empty-state">No pending requests.</p></div></article><article class="social-card find-card"><h3>FIND FRIENDS</h3><form id="friend-search-form" class="search-form"><label class="sr-only" for="friend-search">Search username or UID</label><input id="friend-search" placeholder="Username or UID" autocomplete="off"><button type="submit" class="search-button" aria-label="Search friends">⌕</button></form><div id="search-results" class="social-list"></div></article></div>
+    </section>
+
+    <section id="game-view" class="game-view" aria-label="Bingo versus game" hidden>
+      <div class="game-topline"><div><span class="section-number">02 / Live match</span><h2>Play the board</h2></div><div class="turn-readout"><span id="turn-label">Your turn</span><span id="called-count">0 / 25 called</span></div></div>
+      <div class="call-block call-block-wide"><div class="panel-label"><span id="call-label">Your move</span><span id="current-call">--</span></div><p id="call-message">Choose any available number.</p></div>
+      <div id="players-grid" class="players-grid"></div>
+      <div class="game-actions"><button id="back-mode-button" class="button button-secondary" type="button">Back to modes</button><button id="new-game-button" class="button button-primary" type="button">New game <span aria-hidden="true">↗</span></button></div>
+    </section>
+  </main>
+
+  <div id="win-overlay" class="win-overlay" hidden><div class="confetti" aria-hidden="true"></div><div class="win-content" role="dialog" aria-modal="true" aria-labelledby="win-title"><p class="eyebrow">Match complete</p><h2 id="win-title">BINGO<span>!</span></h2><p id="win-message">BINGO! You win!</p><div class="win-actions"><button id="play-again-button" class="button button-primary" type="button">New game <span aria-hidden="true">↗</span></button><button id="overlay-mode-button" class="button button-secondary" type="button">Back to game modes</button></div></div></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
