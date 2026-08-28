@@ -67,10 +67,12 @@ export async function fetchProfile() {
     const photoURL = user.user_metadata?.avatar_url || user.user_metadata?.picture || data.photo_url;
     const email = user.email || data.email;
     if (displayName !== data.display_name || photoURL !== data.photo_url || email !== data.email) {
-      await supabase
+      supabase
         .from('profiles')
         .update({ display_name: displayName, photo_url: photoURL, email })
-        .eq('id', user.id);
+        .eq('id', user.id)
+        .then(() => {})
+        .catch(() => {});
       data.display_name = displayName;
       data.photo_url = photoURL;
       data.email = email;
@@ -85,15 +87,20 @@ export async function signInWithGoogle() {
     throw new Error('Add your Supabase project URL and anon key to config.js first.');
   }
 
-  const { error } = await supabase.auth.signInWithOAuth({
+  const redirectUrl = window.location.origin + window.location.pathname;
+
+  const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
-      redirectTo: window.location.origin,
-      queryParams: { access_type: 'offline', prompt: 'select_account' },
+      redirectTo: redirectUrl,
     },
   });
 
   if (error) throw error;
+
+  if (data?.url) {
+    window.location.assign(data.url);
+  }
 }
 
 export async function signOut() {
@@ -155,9 +162,14 @@ export async function respondFriendRequest(requestId, accept) {
 }
 
 export async function loadFriends() {
-  const { data, error } = await supabase.rpc('list_friends');
+  const { data, error } = await supabase.rpc('list_friends_with_presence');
   if (error) throw error;
   return data || [];
+}
+
+export async function setPresence(status) {
+  const { error } = await supabase.rpc('set_presence', { p_status: status });
+  if (error) throw error;
 }
 
 export async function loadFriendRequests() {
@@ -166,13 +178,76 @@ export async function loadFriendRequests() {
   return data || [];
 }
 
-async function fetchProfileWithRetry() {
+export async function loadNotifications() {
+  const { data, error } = await supabase.rpc('list_notifications');
+  if (error) throw error;
+  return data || [];
+}
+
+export async function markNotificationRead(notificationId) {
+  const { error } = await supabase.rpc('mark_notification_read', { p_notification_id: notificationId });
+  if (error) throw error;
+}
+
+export async function createFriendGame(friendIds) {
+  const { data, error } = await supabase.rpc('create_game_session', { p_friend_ids: friendIds });
+  if (error) throw error;
+  return Array.isArray(data) ? data[0] : data;
+}
+
+export async function inviteFriendToGame(gameId, friendId) {
+  const { error } = await supabase.rpc('invite_friend_to_game', { p_game_id: gameId, p_friend_id: friendId });
+  if (error) throw error;
+}
+
+export async function respondGameInvitation(gamePlayerId, accept) {
+  const { error } = await supabase.rpc('respond_game_invitation', { p_game_player_id: gamePlayerId, p_accept: accept });
+  if (error) throw error;
+}
+
+export async function loadGamePlayers(gameId) {
+  const { data, error } = await supabase.rpc('list_game_players', { p_game_id: gameId });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function startFriendGame(gameId) {
+  const { data, error } = await supabase.rpc('start_game_session', { p_game_id: gameId });
+  if (error) throw error;
+  return Array.isArray(data) ? data[0] : data;
+}
+
+export async function loadGameIdForPlayer(gamePlayerId) {
+  const { data, error } = await supabase.rpc('game_id_for_player', { p_game_player_id: gamePlayerId });
+  if (error) throw error;
+  return data;
+}
+
+export function subscribeToSocialChanges(userId, onChange) {
+  if (!supabase || !userId) return () => {};
+  const channel = supabase.channel(`social-${userId}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'friend_requests' }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'game_players' }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'user_presence' }, onChange)
+    .subscribe();
+  return () => { supabase.removeChannel(channel); };
+}
+
+export async function fetchProfileWithRetry() {
   let last = await fetchProfile();
-  for (let attempt = 0; attempt < 8 && last.user && !last.profile; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 250));
+  for (let attempt = 0; attempt < 3 && last.user && !last.profile; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
     last = await fetchProfile();
   }
   return last;
+}
+
+export function withTimeout(promise, milliseconds) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Account check timed out.')), milliseconds)),
+  ]);
 }
 
 export function subscribeToAuth(onChange) {
@@ -185,15 +260,18 @@ export function subscribeToAuth(onChange) {
 
   const emit = async (showLoading = false) => {
     if (showLoading && !cancelled) onChange({ configured: true, loading: true, user: null, profile: null });
+    let next = { configured: true, loading: false, user: null, profile: null };
     try {
-      const next = await fetchProfileWithRetry();
-      if (!cancelled) onChange({ configured: true, loading: false, ...next });
+      const profileState = await withTimeout(fetchProfileWithRetry(), 8000);
+      next = { configured: true, loading: false, ...profileState };
     } catch (error) {
-      if (!cancelled) onChange({ configured: true, loading: false, user: null, profile: null, error });
+      next = { ...next, error };
+    } finally {
+      if (!cancelled) onChange(next);
     }
   };
 
-  emit(true);
+  emit(false);
 
   const { data } = supabase.auth.onAuthStateChange((event) => {
     if (event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') return;

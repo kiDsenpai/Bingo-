@@ -122,12 +122,16 @@ create trigger on_auth_user_created
 create or replace function public.protect_profile_columns()
 returns trigger
 language plpgsql
+security definer
+set search_path = public
 as $$
 begin
-  if current_user = 'authenticated' then
+  if auth.role() = 'authenticated' then
     new.id := old.id;
     new.bingo_uid := old.bingo_uid;
-    new.username := old.username;
+    if old.username is not null then
+      new.username := old.username;
+    end if;
     new.games_played := old.games_played;
     new.games_won := old.games_won;
     new.games_lost := old.games_lost;
@@ -255,8 +259,9 @@ begin
     p.bingo_uid,
     case
       when exists (
-        select 1 from public.friendships f
-        where f.user_id = auth.uid() and f.friend_id = p.id
+        select 1 from public.friendships AS friendship
+          where (friendship.user_id = auth.uid() and friendship.friend_id = p.id)
+            or (friendship.friend_id = auth.uid() and friendship.user_id = p.id)
       ) then 'friends'
       when exists (
         select 1 from public.friend_requests r
@@ -306,8 +311,8 @@ begin
   end if;
 
   if exists (
-    select 1 from public.friendships
-    where user_id = auth.uid() and friend_id = p_target_id
+    select 1 from public.friendships AS friendship
+    where friendship.user_id = auth.uid() and friendship.friend_id = p_target_id
   ) then
     raise exception 'You are already friends';
   end if;
@@ -401,9 +406,10 @@ security definer
 set search_path = public
 as $$
   select p.id, p.username, p.display_name, p.photo_url, p.bingo_uid
-  from public.friendships f
-  join public.profiles p on p.id = f.friend_id
-  where f.user_id = auth.uid()
+  from public.friendships AS friendship
+  join public.profiles AS p on p.id = case when friendship.user_id = auth.uid() then friendship.friend_id else friendship.user_id end
+  where friendship.user_id = auth.uid() or friendship.friend_id = auth.uid()
+  group by p.id, p.username, p.display_name, p.photo_url, p.bingo_uid
   order by p.username;
 $$;
 

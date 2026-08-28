@@ -1,0 +1,247 @@
+-- Bingo social inbox and friend-game lobby migration.
+-- Run after sql/schema.sql in Supabase SQL Editor.
+
+create table if not exists public.notifications (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  sender_id uuid references public.profiles (id) on delete set null,
+  type text not null check (type in ('friend_request', 'friend_accepted', 'game_invitation', 'game_invitation_accepted', 'game_invitation_declined')),
+  title text not null,
+  message text not null,
+  related_id uuid,
+  is_read boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists notifications_user_created_idx on public.notifications (user_id, created_at desc);
+create index if not exists notifications_unread_idx on public.notifications (user_id, is_read) where is_read = false;
+
+create table if not exists public.game_sessions (
+  id uuid primary key default gen_random_uuid(),
+  host_id uuid not null references public.profiles (id) on delete cascade,
+  status text not null default 'lobby' check (status in ('lobby', 'waiting', 'active', 'finished', 'cancelled')),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.game_players (
+  id uuid primary key default gen_random_uuid(),
+  game_id uuid not null references public.game_sessions (id) on delete cascade,
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  status text not null default 'invited' check (status in ('invited', 'joined', 'declined', 'removed')),
+  joined_at timestamptz,
+  unique (game_id, user_id)
+);
+
+alter table public.game_sessions drop constraint if exists game_sessions_status_check;
+alter table public.game_sessions add constraint game_sessions_status_check check (status in ('lobby', 'waiting', 'active', 'finished', 'cancelled'));
+alter table public.game_players drop constraint if exists game_players_status_check;
+alter table public.game_players add constraint game_players_status_check check (status in ('invited', 'joined', 'declined', 'removed'));
+
+create index if not exists game_players_user_idx on public.game_players (user_id, status);
+
+create table if not exists public.user_presence (
+  user_id uuid primary key references public.profiles (id) on delete cascade,
+  status text not null default 'offline' check (status in ('online', 'playing', 'offline')),
+  last_seen_at timestamptz not null default now()
+);
+create index if not exists user_presence_status_idx on public.user_presence (status, last_seen_at desc);
+
+create or replace function public.set_presence(p_status text)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null or p_status not in ('online', 'playing', 'offline') then raise exception 'Invalid presence'; end if;
+  insert into public.user_presence (user_id, status, last_seen_at) values (auth.uid(), p_status, now())
+  on conflict (user_id) do update set status = excluded.status, last_seen_at = excluded.last_seen_at;
+end;
+$$;
+
+create or replace function public.list_friends_with_presence()
+returns table (id uuid, username text, display_name text, photo_url text, bingo_uid text, presence_status text)
+language sql stable security definer set search_path = public as $$
+  select p.id, p.username, p.display_name, p.photo_url, p.bingo_uid,
+    case when coalesce(up.last_seen_at, now() - interval '1 day') < now() - interval '2 minutes' then 'offline' else coalesce(up.status, 'online') end
+  from public.friendships f
+  join public.profiles p on p.id = case when f.user_id = auth.uid() then f.friend_id else f.user_id end
+  left join public.user_presence up on up.user_id = p.id
+  where f.user_id = auth.uid() or f.friend_id = auth.uid()
+  group by p.id, p.username, p.display_name, p.photo_url, p.bingo_uid, up.status, up.last_seen_at
+  order by p.username;
+$$;
+
+create or replace function public.notify_friend_request()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare sender_name text;
+begin
+  select display_name into sender_name from public.profiles where id = new.from_id;
+  insert into public.notifications (user_id, sender_id, type, title, message, related_id)
+  values (new.to_id, new.from_id, 'friend_request', 'New friend request', coalesce(sender_name, 'A Bingo player') || ' wants to be your friend.', new.id);
+  return new;
+end;
+$$;
+
+drop trigger if exists friend_request_notification on public.friend_requests;
+create trigger friend_request_notification after insert on public.friend_requests for each row when (new.status = 'pending') execute function public.notify_friend_request();
+
+create or replace function public.notify_friend_acceptance()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare accepter_name text;
+begin
+  if old.status <> 'accepted' and new.status = 'accepted' then
+    select display_name into accepter_name from public.profiles where id = new.to_id;
+    insert into public.notifications (user_id, sender_id, type, title, message, related_id)
+    values (new.from_id, new.to_id, 'friend_accepted', 'Friend request accepted', coalesce(accepter_name, 'A Bingo player') || ' accepted your friend request.', new.id);
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists friend_acceptance_notification on public.friend_requests;
+create trigger friend_acceptance_notification after update on public.friend_requests for each row execute function public.notify_friend_acceptance();
+
+create or replace function public.list_notifications()
+returns table (id uuid, sender_id uuid, type text, title text, message text, related_id uuid, is_read boolean, created_at timestamptz)
+language sql stable security definer set search_path = public as $$
+  select n.id, n.sender_id, n.type, n.title, n.message, n.related_id, n.is_read, n.created_at
+  from public.notifications n where n.user_id = auth.uid() order by n.created_at desc limit 100;
+$$;
+
+create or replace function public.list_friends()
+returns table (id uuid, username text, display_name text, photo_url text, bingo_uid text)
+language sql stable security definer set search_path = public as $$
+  select p.id, p.username, p.display_name, p.photo_url, p.bingo_uid
+  from public.friendships f
+  join public.profiles p on p.id = case when f.user_id = auth.uid() then f.friend_id else f.user_id end
+  where f.user_id = auth.uid() or f.friend_id = auth.uid()
+  group by p.id, p.username, p.display_name, p.photo_url, p.bingo_uid
+  order by p.username;
+$$;
+
+create or replace function public.mark_notification_read(p_notification_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  update public.notifications set is_read = true where id = p_notification_id and user_id = auth.uid();
+end;
+$$;
+
+create or replace function public.create_game_session(p_friend_ids uuid[])
+returns public.game_sessions language plpgsql security definer set search_path = public as $$
+declare session_row public.game_sessions; invitee_id uuid; host_name text;
+begin
+  if auth.uid() is null then raise exception 'Not signed in'; end if;
+  if coalesce(array_length(p_friend_ids, 1), 0) < 1 then raise exception 'Select at least one friend'; end if;
+  if exists (select 1 from unnest(p_friend_ids) id where id = auth.uid()) then raise exception 'You cannot invite yourself'; end if;
+  if exists (select 1 from unnest(p_friend_ids) AS requested_friend_id where not exists (select 1 from public.friendships AS friendship where friendship.user_id = auth.uid() and friendship.friend_id = requested_friend_id)) then raise exception 'You can only invite friends'; end if;
+  insert into public.game_sessions (host_id) values (auth.uid()) returning * into session_row;
+  insert into public.game_players (game_id, user_id, status) values (session_row.id, auth.uid(), 'joined');
+  select display_name into host_name from public.profiles where id = auth.uid();
+  foreach invitee_id in array p_friend_ids loop
+    insert into public.game_players (game_id, user_id, status) values (session_row.id, invitee_id, 'invited') on conflict do nothing;
+    insert into public.notifications (user_id, sender_id, type, title, message, related_id)
+    values (invitee_id, auth.uid(), 'game_invitation', 'Bingo game invitation', coalesce(host_name, 'A Bingo player') || ' invited you to play Bingo.', (select player.id from public.game_players AS player where player.game_id = session_row.id and player.user_id = invitee_id));
+  end loop;
+  return session_row;
+end;
+$$;
+
+create or replace function public.list_game_players(p_game_id uuid)
+returns table (id uuid, user_id uuid, username text, display_name text, photo_url text, status text, joined_at timestamptz)
+language sql stable security definer set search_path = public as $$
+  select gp.id, gp.user_id, p.username, p.display_name, p.photo_url, gp.status, gp.joined_at
+  from public.game_players AS gp
+  join public.profiles AS p on p.id = gp.user_id
+  where gp.game_id = p_game_id
+    and exists (select 1 from public.game_players AS viewer where viewer.game_id = p_game_id and viewer.user_id = auth.uid())
+  order by gp.joined_at nulls last, p.username;
+$$;
+
+create or replace function public.start_game_session(p_game_id uuid)
+returns public.game_sessions language plpgsql security definer set search_path = public as $$
+declare result public.game_sessions;
+begin
+  update public.game_sessions AS session
+  set status = 'active'
+  where session.id = p_game_id
+    and session.host_id = auth.uid()
+    and (select count(*) from public.game_players AS player where player.game_id = p_game_id and player.status = 'joined') >= 2
+  returning session.* into result;
+  if not found then raise exception 'Only the host can start a lobby with at least two joined players'; end if;
+  return result;
+end;
+$$;
+
+create or replace function public.respond_game_invitation(p_game_player_id uuid, p_accept boolean)
+returns void language plpgsql security definer set search_path = public as $$
+declare player_row public.game_players; host_name text; me_name text;
+begin
+  select gp.* into player_row from public.game_players gp join public.game_sessions gs on gs.id = gp.game_id where gp.id = p_game_player_id and gp.user_id = auth.uid() and gp.status = 'invited';
+  if not found then raise exception 'Invitation not found'; end if;
+  update public.game_players set status = case when p_accept then 'joined' else 'declined' end, joined_at = case when p_accept then now() else null end where id = p_game_player_id;
+  select display_name into host_name from public.profiles where id = (select host_id from public.game_sessions where id = player_row.game_id);
+  select display_name into me_name from public.profiles where id = auth.uid();
+  insert into public.notifications (user_id, sender_id, type, title, message, related_id)
+  values ((select host_id from public.game_sessions where id = player_row.game_id), auth.uid(), case when p_accept then 'game_invitation_accepted' else 'game_invitation_declined' end, case when p_accept then 'Player joined your game' else 'Game invitation declined' end, coalesce(me_name, 'A Bingo player') || case when p_accept then ' joined your Bingo lobby.' else ' declined your Bingo invitation.' end, player_row.game_id);
+end;
+$$;
+
+create or replace function public.game_id_for_player(p_game_player_id uuid)
+returns uuid language sql stable security definer set search_path = public as $$
+  select gp.game_id
+  from public.game_players AS gp
+  where gp.id = p_game_player_id and gp.user_id = auth.uid();
+$$;
+
+create or replace function public.invite_friend_to_game(p_game_id uuid, p_friend_id uuid)
+returns public.game_players language plpgsql security definer set search_path = public as $$
+declare result public.game_players; host_name text;
+begin
+  if not exists (select 1 from public.game_sessions AS session where session.id = p_game_id and session.host_id = auth.uid() and session.status in ('lobby', 'waiting')) then raise exception 'Only the host can add players to this lobby'; end if;
+  if not exists (select 1 from public.friendships AS friendship where (friendship.user_id = auth.uid() and friendship.friend_id = p_friend_id) or (friendship.friend_id = auth.uid() and friendship.user_id = p_friend_id)) then raise exception 'You can only invite friends'; end if;
+  insert into public.game_players (game_id, user_id, status) values (p_game_id, p_friend_id, 'invited') on conflict (game_id, user_id) do update set status = 'invited' returning * into result;
+  select display_name into host_name from public.profiles where id = auth.uid();
+  insert into public.notifications (user_id, sender_id, type, title, message, related_id)
+  values (p_friend_id, auth.uid(), 'game_invitation', 'Bingo game invitation', coalesce(host_name, 'A Bingo player') || ' invited you to play Bingo.', result.id);
+  return result;
+end;
+$$;
+
+alter table public.notifications enable row level security;
+alter table public.game_sessions enable row level security;
+alter table public.game_players enable row level security;
+alter table public.user_presence enable row level security;
+
+drop policy if exists "users can read own notifications" on public.notifications;
+create policy "users can read own notifications" on public.notifications for select to authenticated using (user_id = auth.uid());
+drop policy if exists "users can read authorized games" on public.game_sessions;
+create policy "users can read authorized games" on public.game_sessions for select to authenticated using (host_id = auth.uid() or exists (select 1 from public.game_players gp where gp.game_id = game_sessions.id and gp.user_id = auth.uid()));
+drop policy if exists "users can read game player rows" on public.game_players;
+create policy "users can read game player rows" on public.game_players for select to authenticated using (user_id = auth.uid() or exists (select 1 from public.game_sessions gs where gs.id = game_players.game_id and gs.host_id = auth.uid()));
+drop policy if exists "authenticated users can read friend presence" on public.user_presence;
+create policy "authenticated users can read friend presence" on public.user_presence for select to authenticated using (true);
+drop policy if exists "users can insert own presence" on public.user_presence;
+create policy "users can insert own presence" on public.user_presence for insert to authenticated with check (user_id = auth.uid());
+drop policy if exists "users can update own presence" on public.user_presence;
+create policy "users can update own presence" on public.user_presence for update to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+grant select on public.notifications to authenticated;
+grant select on public.game_sessions to authenticated;
+grant select on public.game_players to authenticated;
+grant select, insert, update on public.user_presence to authenticated;
+grant execute on function public.list_notifications() to authenticated;
+grant execute on function public.mark_notification_read(uuid) to authenticated;
+grant execute on function public.create_game_session(uuid[]) to authenticated;
+grant execute on function public.respond_game_invitation(uuid, boolean) to authenticated;
+grant execute on function public.game_id_for_player(uuid) to authenticated;
+grant execute on function public.invite_friend_to_game(uuid, uuid) to authenticated;
+grant execute on function public.list_game_players(uuid) to authenticated;
+grant execute on function public.start_game_session(uuid) to authenticated;
+grant execute on function public.set_presence(text) to authenticated;
+grant execute on function public.list_friends_with_presence() to authenticated;
+
+do $$ begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    execute 'alter publication supabase_realtime add table public.notifications';
+    execute 'alter publication supabase_realtime add table public.game_sessions';
+    execute 'alter publication supabase_realtime add table public.game_players';
+    execute 'alter publication supabase_realtime add table public.user_presence';
+  end if;
+exception when duplicate_object then null; end $$;

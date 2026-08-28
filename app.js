@@ -1,7 +1,17 @@
 import {
   checkUsernameAvailability,
   claimUsername,
+  fetchProfileWithRetry,
+  withTimeout,
   loadFriendRequests,
+  loadNotifications,
+  markNotificationRead,
+  createFriendGame,
+  inviteFriendToGame,
+  respondGameInvitation,
+  loadGamePlayers,
+  startFriendGame,
+  loadGameIdForPlayer,
   loadFriends,
   respondFriendRequest,
   searchPlayers,
@@ -9,6 +19,8 @@ import {
   signInWithGoogle,
   signOut,
   subscribeToAuth,
+  subscribeToSocialChanges,
+  setPresence,
 } from './account.js';
 import { isSupabaseConfigured } from './supabase-client.js';
 
@@ -32,12 +44,22 @@ const usernameViewElement = document.querySelector('#username-view');
 const authMessageElement = document.querySelector('#auth-message');
 const usernameMessageElement = document.querySelector('#username-message');
 const navButtons = document.querySelectorAll('.nav-button');
+const appShellElement = document.querySelector('.app-shell');
+const accountLoadingElement = document.querySelector('#account-loading');
 
 let activeView = 'home';
-let auth = { configured: isSupabaseConfigured, loading: isSupabaseConfigured, user: null, profile: null, error: null };
+let isProfileLoading = false;
+let auth = { configured: isSupabaseConfigured, loading: false, user: null, profile: null, error: null };
 let friends = [];
 let friendRequests = [];
+let notifications = [];
 let socialLoading = false;
+let socialCleanup = () => {};
+let presenceTimer = null;
+let lobbyFriends = [];
+let lobbyOpen = false;
+let lobbyGameId = null;
+let lobbyPlayerRows = [];
 
 let game = createModeGame();
 let botTimer = null;
@@ -99,12 +121,14 @@ function isSignedIn() {
 }
 
 function render() {
+  appShellElement.hidden = isProfileLoading;
+  accountLoadingElement.hidden = !isProfileLoading;
+  if (isProfileLoading) return;
   const setupRequired = needsUsername();
   const showProfile = !setupRequired && activeView === 'profile' && isSignedIn();
-  const showAuth = !setupRequired && (activeView === 'home' || activeView === 'profile') && !auth.loading && !isSignedIn();
-  const showPlay = !setupRequired && (activeView === 'play' || (activeView === 'home' && isSignedIn()));
-  const showGame = showPlay && activeView === 'play' && game.phase === 'game';
-  const showModes = showPlay && !showGame;
+  const showAuth = !setupRequired && activeView === 'profile' && !isSignedIn();
+  const showGame = !setupRequired && activeView === 'play' && game.phase === 'game';
+  const showModes = !setupRequired && activeView === 'home' && !showGame;
 
   modeViewElement.hidden = !showModes;
   gameViewElement.hidden = !showGame;
@@ -117,6 +141,9 @@ function render() {
 
   if (showGame) renderGame();
   if (showProfile) renderProfile();
+  renderHomeFriends();
+  renderInbox();
+  renderLobby();
   renderAuthCopy();
   statusLabelElement.textContent = statusText(setupRequired, showGame);
 }
@@ -144,6 +171,19 @@ function renderAuthCopy() {
     return;
   }
   authMessageElement.textContent = 'Sign in with Google to create your Bingo account.';
+}
+
+function renderHomeFriends() {
+  const panel = document.querySelector('#home-friends-panel');
+  const list = document.querySelector('#home-friends-list');
+  panel.hidden = activeView !== 'home';
+  if (!isSignedIn()) { list.innerHTML = '<p class="empty-state">Sign in to see your friends.</p>'; return; }
+  const counts = friends.reduce((result, friend) => { const status = friend.presence_status || 'offline'; result[status] += 1; return result; }, { online: 0, playing: 0, offline: 0 });
+  document.querySelector('#home-online-count').textContent = counts.online;
+  document.querySelector('#home-playing-count').textContent = counts.playing;
+  document.querySelector('#home-offline-count').textContent = counts.offline;
+  list.innerHTML = friends.length ? friends.map((friend) => `<div class="home-friend-row"><span class="presence-dot presence-${friend.presence_status || 'offline'}"></span><div><strong>${escapeHtml(friend.display_name)}</strong><span>@${escapeHtml(friend.username)}</span></div><button class="text-button call-friend" data-id="${friend.id}" type="button" ${friend.presence_status === 'online' ? '' : 'disabled'}>CALL</button></div>`).join('') : '<p class="empty-state">No friends yet.</p>';
+  list.querySelectorAll('.call-friend').forEach((button) => button.addEventListener('click', () => inviteFriend(button.dataset.id)));
 }
 
 function escapeHtml(value) {
@@ -184,9 +224,66 @@ function renderProfile() {
   document.querySelector('#requests-list').innerHTML = friendRequests.length
     ? friendRequests.map((request) => socialRow(request, `<button class="text-button accept-request" data-id="${request.request_id}" type="button">ACCEPT</button><button class="text-button decline-request" data-id="${request.request_id}" type="button">DECLINE</button>`)).join('')
     : '<p class="empty-state">No pending requests.</p>';
-  document.querySelectorAll('.play-friend').forEach((button) => button.addEventListener('click', () => { button.textContent = 'SOON'; }));
+  document.querySelectorAll('.play-friend').forEach((button) => button.addEventListener('click', () => inviteFriend(button.dataset.id)));
   document.querySelectorAll('.accept-request').forEach((button) => button.addEventListener('click', () => handleRequest(button.dataset.id, true, button)));
   document.querySelectorAll('.decline-request').forEach((button) => button.addEventListener('click', () => handleRequest(button.dataset.id, false, button)));
+}
+
+function renderInbox() {
+  const unread = notifications.filter((notification) => !notification.is_read).length;
+  const badge = document.querySelector('#inbox-badge');
+  badge.hidden = unread === 0;
+  badge.textContent = unread;
+  const list = document.querySelector('#notification-list');
+  list.innerHTML = notifications.length ? notifications.map((notification) => `<article class="notification-item${notification.is_read ? '' : ' unread'}"><div><strong>${escapeHtml(notification.title)}</strong><p>${escapeHtml(notification.message)}</p><small>${new Date(notification.created_at).toLocaleString()}</small></div>${notification.type === 'friend_request' ? '<div class="notification-actions"><button class="text-button accept-request" data-id="' + notification.related_id + '" type="button">ACCEPT</button><button class="text-button decline-request" data-id="' + notification.related_id + '" type="button">DECLINE</button></div>' : ''}${notification.type === 'game_invitation' ? '<div class="notification-actions"><button class="text-button accept-game" data-id="' + notification.related_id + '" type="button">ACCEPT</button><button class="text-button decline-game" data-id="' + notification.related_id + '" type="button">DECLINE</button></div>' : ''}<button class="text-button read-notification" data-id="${notification.id}" type="button">${notification.is_read ? 'READ' : 'MARK READ'}</button></article>`).join('') : '<p class="empty-state">No notifications yet.</p>';
+  list.querySelectorAll('.read-notification').forEach((button) => button.addEventListener('click', async () => { try { await markNotificationRead(button.dataset.id); } catch (error) { return; } notifications = notifications.map((item) => item.id === button.dataset.id ? { ...item, is_read: true } : item); renderInbox(); }));
+  list.querySelectorAll('.accept-request').forEach((button) => button.addEventListener('click', () => handleRequest(button.dataset.id, true, button)));
+  list.querySelectorAll('.decline-request').forEach((button) => button.addEventListener('click', () => handleRequest(button.dataset.id, false, button)));
+  list.querySelectorAll('.accept-game').forEach((button) => button.addEventListener('click', async () => { await respondGameInvitation(button.dataset.id, true); document.querySelector('#inbox-panel').hidden = true; openLobbyForInvitation(button.dataset.id); }));
+  list.querySelectorAll('.decline-game').forEach((button) => button.addEventListener('click', async () => { await respondGameInvitation(button.dataset.id, false); await refreshSocial(); }));
+}
+
+function renderLobby() {
+  const panel = document.querySelector('#friend-lobby');
+  panel.hidden = !lobbyOpen;
+  document.querySelector('#lobby-player-count').textContent = `${lobbyFriends.length + 1} / 10`;
+  const joinedPlayers = lobbyPlayerRows.filter((player) => player.status === 'joined').length;
+  document.querySelector('#start-lobby-button').disabled = lobbyGameId ? joinedPlayers < 2 : lobbyFriends.length === 0;
+  document.querySelector('#lobby-friends').innerHTML = friends.length ? friends.map((friend) => { const selected = lobbyGameId ? lobbyPlayerRows.some((item) => item.user_id === friend.id && item.status !== 'declined') : lobbyFriends.some((item) => item.id === friend.id); return socialRow(friend, `<button class="text-button lobby-toggle" data-id="${friend.id}" type="button" ${selected ? 'disabled' : ''}>${selected ? 'INVITED' : '+ ADD'}</button>`); }).join('') : '<p class="empty-state">No friends available.</p>';
+  document.querySelector('#lobby-selected').innerHTML = lobbyPlayerRows.length ? lobbyPlayerRows.map((player) => `<div class="selected-player">${escapeHtml(player.display_name)} <span>${escapeHtml(player.status)}</span></div>`).join('') : `<div class="selected-player">YOU <span>HOST</span></div>${lobbyFriends.map((friend) => `<div class="selected-player">${escapeHtml(friend.display_name)} <span>INVITED</span></div>`).join('')}`;
+  document.querySelectorAll('.lobby-toggle').forEach((button) => button.addEventListener('click', () => lobbyGameId ? inviteLobbyFriend(button.dataset.id, button) : toggleLobbyFriend(button.dataset.id)));
+  document.querySelectorAll('.lobby-remove').forEach((button) => button.addEventListener('click', () => toggleLobbyFriend(button.dataset.id)));
+}
+
+function showInvitation(notification) {
+  const popup = document.querySelector('#invitation-popup');
+  document.querySelector('#invitation-title').textContent = notification.title;
+  document.querySelector('#invitation-message').textContent = notification.message;
+  popup.dataset.playerId = notification.related_id || '';
+  popup.hidden = false;
+}
+
+function openLobby(selectedFriends = []) { lobbyGameId = null; lobbyPlayerRows = []; lobbyFriends = selectedFriends; lobbyOpen = true; renderLobby(); }
+async function openLobbyForInvitation(playerId) { try { await openLobbyByGameId(await fetchGameId(playerId)); } catch (error) { document.querySelector('#call-message').textContent = error.message || 'Could not open the game lobby.'; } }
+async function openLobbyByGameId(gameId) { lobbyGameId = gameId; lobbyPlayerRows = await loadGamePlayers(gameId); lobbyOpen = true; renderLobby(); }
+function closeLobby() { lobbyOpen = false; lobbyGameId = null; lobbyPlayerRows = []; renderLobby(); }
+function toggleLobbyFriend(id) { const friend = friends.find((item) => item.id === id); if (!friend) return; lobbyFriends = lobbyFriends.some((item) => item.id === id) ? lobbyFriends.filter((item) => item.id !== id) : [...lobbyFriends, friend]; renderLobby(); }
+
+async function fetchGameId(playerId) { return loadGameIdForPlayer(playerId); }
+
+async function inviteFriend(friendId) { try { await createFriendGame([friendId]); modeMessageElement.textContent = 'Game invitation sent. Waiting for your friend to join.'; } catch (error) { modeMessageElement.textContent = error.message || 'Could not send game invitation.'; } }
+
+async function startFriendLobbyGame() {
+  const button = document.querySelector('#start-lobby-button'); button.disabled = true;
+  try { if (!lobbyGameId) throw new Error('Wait for a friend to join before starting.'); await startFriendGame(lobbyGameId); await setPresence('playing'); document.querySelector('#lobby-message').textContent = 'Game started for the joined players.'; }
+  catch (error) { document.querySelector('#lobby-message').textContent = error.message || 'Could not create game lobby.'; button.disabled = false; }
+}
+
+async function inviteLobbyFriend(friendId, button) { button.disabled = true; try { await inviteFriendToGame(lobbyGameId, friendId); button.textContent = 'INVITED'; await refreshLobby(); } catch (error) { button.disabled = false; button.textContent = 'ERROR'; } }
+
+async function refreshLobby() {
+  if (!lobbyGameId) return;
+  try { lobbyPlayerRows = await loadGamePlayers(lobbyGameId); renderLobby(); } catch (error) { document.querySelector('#lobby-message').textContent = error.message || 'Could not refresh lobby.'; }
 }
 
 function socialRow(person, actions) {
@@ -203,19 +300,49 @@ function relationshipLabel(relationship) {
   return 'SEND REQUEST';
 }
 
+function setupSocialSubscription(userId) {
+  if (!userId || socialCleanup.userId === userId) return;
+  if (typeof socialCleanup === 'function') socialCleanup();
+  const cleanupFn = subscribeToSocialChanges(userId, async () => {
+    try {
+      [friends, friendRequests, notifications] = await Promise.all([loadFriends(), loadFriendRequests(), loadNotifications()]);
+      await refreshLobby();
+      const invitation = notifications.find((notification) => notification.type === 'game_invitation' && !notification.is_read);
+      if (invitation) showInvitation(invitation);
+      const joined = notifications.find((notification) => notification.type === 'game_invitation_accepted' && !notification.is_read);
+      if (joined && joined.related_id) openLobbyByGameId(joined.related_id);
+    } catch (err) {
+      console.warn('Realtime update warning:', err);
+    } finally {
+      render();
+    }
+  });
+  socialCleanup = () => {
+    if (typeof cleanupFn === 'function') cleanupFn();
+    socialCleanup.userId = null;
+  };
+  socialCleanup.userId = userId;
+}
+
 async function refreshSocial() {
   if (!isSignedIn()) {
     friends = [];
     friendRequests = [];
+    notifications = [];
     return;
   }
   socialLoading = true;
   try {
-    [friends, friendRequests] = await Promise.all([loadFriends(), loadFriendRequests()]);
+    [friends, friendRequests, notifications] = await Promise.all([loadFriends(), loadFriendRequests(), loadNotifications()]);
+    const invitation = notifications.find((notification) => notification.type === 'game_invitation' && !notification.is_read);
+    if (invitation) showInvitation(invitation);
   } catch (error) {
-    console.warn(error);
+    console.warn('Refresh social error:', error);
   } finally {
     socialLoading = false;
+    setupSocialSubscription(auth.user.id);
+    if (presenceTimer) clearInterval(presenceTimer);
+    presenceTimer = setInterval(() => setPresence('online').catch(() => {}), 60000);
     if (activeView === 'profile') render();
   }
 }
@@ -403,6 +530,7 @@ function backToModes() {
   if (botTimer) clearTimeout(botTimer);
   botTimer = null;
   game = createModeGame();
+  activeView = 'home';
   winOverlayElement.hidden = true;
   modeMessageElement.textContent = 'Choose a mode to begin.';
   render();
@@ -414,29 +542,95 @@ function setHint(element, text, isError = false) {
   element.classList.toggle('hint-ok', !isError && /available/.test(text));
 }
 
+function resetTerminalAnimation() {
+  if (!accountLoadingElement) return;
+  const lines = accountLoadingElement.querySelectorAll('.terminal-line');
+  lines.forEach((line) => {
+    line.style.animation = 'none';
+    void line.offsetWidth;
+    line.style.animation = '';
+  });
+}
+
+async function navigateToProfile() {
+  if (needsUsername()) {
+    activeView = 'profile';
+    render();
+    return;
+  }
+
+  isProfileLoading = true;
+  render();
+  resetTerminalAnimation();
+
+  const minAnimationPromise = new Promise((resolve) => setTimeout(resolve, 450));
+
+  try {
+    const profilePromise = withTimeout(fetchProfileWithRetry(), 5000);
+    const [profileState] = await Promise.all([profilePromise, minAnimationPromise]);
+    auth = { configured: true, loading: false, ...profileState };
+    if (isSignedIn()) {
+      await refreshSocial();
+      await setPresence('online');
+    }
+  } catch (error) {
+    console.warn('Profile navigation error:', error);
+    auth = { ...auth, error };
+  } finally {
+    isProfileLoading = false;
+    activeView = 'profile';
+    render();
+  }
+}
+
 document.querySelector('#bot-mode-button').addEventListener('click', startBotMode);
-document.querySelector('#friend-mode-button').addEventListener('click', () => {
-  modeMessageElement.textContent = 'PLAY WITH FRIEND is coming soon.';
+document.querySelector('#online-mode-button').addEventListener('click', () => { modeMessageElement.textContent = 'PLAY ONLINE is coming soon.'; });
+document.querySelector('#friend-mode-button').addEventListener('click', async () => {
+  if (!isSignedIn()) {
+    await navigateToProfile();
+    return;
+  }
+  openLobby();
 });
 document.querySelector('#new-game-button').addEventListener('click', startBotMode);
 document.querySelector('#back-mode-button').addEventListener('click', backToModes);
 document.querySelector('#play-again-button').addEventListener('click', startBotMode);
 document.querySelector('#overlay-mode-button').addEventListener('click', backToModes);
+document.querySelector('#inbox-button').addEventListener('click', () => { const panel = document.querySelector('#inbox-panel'); panel.hidden = !panel.hidden; document.querySelector('#inbox-button').setAttribute('aria-expanded', String(!panel.hidden)); });
+document.querySelector('#close-inbox-button').addEventListener('click', () => { document.querySelector('#inbox-panel').hidden = true; document.querySelector('#inbox-button').setAttribute('aria-expanded', 'false'); });
+document.querySelector('#close-lobby-button').addEventListener('click', closeLobby);
+document.querySelector('#cancel-lobby-button').addEventListener('click', closeLobby);
+document.querySelector('#start-lobby-button').addEventListener('click', startFriendLobbyGame);
+document.querySelector('#home-friends-refresh').addEventListener('click', refreshSocial);
+document.querySelector('#join-invitation-button').addEventListener('click', async () => { const popup = document.querySelector('#invitation-popup'); await respondGameInvitation(popup.dataset.playerId, true); popup.hidden = true; openLobby(); });
+document.querySelector('#decline-invitation-button').addEventListener('click', async () => { const popup = document.querySelector('#invitation-popup'); await respondGameInvitation(popup.dataset.playerId, false); popup.hidden = true; });
 
-navButtons.forEach((button) => button.addEventListener('click', () => {
+navButtons.forEach((button) => button.addEventListener('click', async () => {
   if (needsUsername()) return;
-  activeView = button.dataset.view;
-  if (activeView === 'play' && game.phase !== 'game') game.phase = 'mode';
-  render();
+  const view = button.dataset.view;
+  if (view === 'profile') {
+    await navigateToProfile();
+  } else {
+    activeView = view;
+    if (activeView === 'home' && game.phase !== 'game') game.phase = 'mode';
+    render();
+  }
 }));
 
 document.querySelector('#google-signin-button').addEventListener('click', async (event) => {
   const button = event.currentTarget;
   button.disabled = true;
+  authMessageElement.textContent = 'Redirecting to Google...';
+  
+  const resetTimer = setTimeout(() => {
+    button.disabled = false;
+    authMessageElement.textContent = 'Redirect taking longer than expected. Please check popup blockers or Supabase Auth settings.';
+  }, 5000);
+
   try {
     await signInWithGoogle();
-    authMessageElement.textContent = 'Opening Google sign-in...';
   } catch (error) {
+    clearTimeout(resetTimer);
     button.disabled = false;
     authMessageElement.textContent = error.message || 'Google sign-in failed.';
   }
@@ -470,9 +664,15 @@ document.querySelector('#username-form').addEventListener('submit', async (event
 });
 
 document.querySelector('#logout-button').addEventListener('click', async () => {
+  if (isSignedIn()) { try { await setPresence('offline'); } catch (error) { console.warn('Presence unavailable.', error); } }
   await signOut();
+  socialCleanup();
+  socialCleanup = () => {};
+  if (presenceTimer) clearInterval(presenceTimer);
+  presenceTimer = null;
   friends = [];
   friendRequests = [];
+  notifications = [];
   activeView = 'home';
 });
 
@@ -490,19 +690,21 @@ document.querySelector('#friend-search-form').addEventListener('submit', (event)
 
 subscribeToAuth(async (next) => {
   auth = next;
-  if (isSignedIn()) await refreshSocial();
-  else {
-    friends = [];
-    friendRequests = [];
-  }
   render();
+  try {
+    if (isSignedIn()) await refreshSocial();
+    else {
+      friends = [];
+      friendRequests = [];
+    }
+    if (isSignedIn()) await setPresence('online');
+  } catch (error) {
+    auth = { ...auth, error };
+    console.warn('Account setup failed.', error);
+  } finally {
+    render();
+  }
 });
-
-const savedGame = loadGame();
-if (savedGame) {
-  game = savedGame;
-  if (game.phase === 'game') activeView = 'play';
-}
 
 render();
 
