@@ -54,22 +54,33 @@ h1 { font-size: clamp(72px, 14vw, 166px); }
 .account-copy { max-width: 390px; color: var(--muted); font: 400 13px/1.6 'DM Mono', monospace; margin-bottom: 30px; }
 .google-button { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0 19px; border: 1px solid #ffffff; color: #000000; background: #ffffff; font: 600 12px 'Manrope', sans-serif; }
 .google-mark { display: grid; place-items: center; width: 24px; height: 24px; color: #ffffff; background: #000000; font: 700 14px Arial, sans-serif; }
+.google-button:disabled { opacity: .55; }
 .account-form { display: grid; gap: 12px; max-width: 400px; }
 .account-form label { color: #ffffff; font: 500 11px 'DM Mono', monospace; text-transform: uppercase; }
 .account-form input, .search-form input { min-height: 48px; border: 1px solid #ffffff; outline: 0; color: #ffffff; background: #000000; padding: 0 14px; font: 500 14px 'DM Mono', monospace; }
 .account-form input:focus, .search-form input:focus { box-shadow: 3px 3px 0 #ffffff; }
+.username-field { display: flex; align-items: stretch; border: 1px solid #ffffff; }
+.username-prefix { display: grid; place-items: center; min-width: 42px; color: #ffffff; border-right: 1px solid #ffffff; font: 500 16px 'DM Mono', monospace; }
+.username-field input { border: 0; flex: 1; min-width: 0; }
+.username-field input:focus { box-shadow: none; }
+.form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.form-actions .button { flex: 1; min-width: 160px; }
+.hint-error { color: #ffffff; }
+.hint-ok { color: #ffffff; }
 .profile-head { display: flex; align-items: end; justify-content: space-between; gap: 20px; border-bottom: 1px solid #ffffff; padding-bottom: 28px; }
 .profile-head h2 { margin-bottom: 0; }
 .profile-grid, .social-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 22px; }
 .profile-card, .social-card { border: 1px solid #ffffff; padding: 22px; }
 .identity-card { display: grid; align-content: start; gap: 8px; }
-.profile-avatar, .mini-avatar { display: grid; place-items: center; color: #000000; background: #ffffff; font: 700 24px 'Caveat', cursive; }
+.profile-avatar, .mini-avatar { display: grid; place-items: center; overflow: hidden; color: #000000; background: #ffffff; font: 700 24px 'Caveat', cursive; }
 .profile-avatar { width: 72px; height: 72px; margin-bottom: 10px; }
+.profile-avatar img, .mini-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .profile-card h3, .social-card h3 { color: #ffffff; font: 700 20px 'Manrope', sans-serif; margin: 0; }
 .profile-card p { color: var(--muted); font: 400 12px 'DM Mono', monospace; margin: 0; }
 .uid-line { border-top: 1px solid #555555; padding-top: 14px; margin-top: 12px !important; }
 .uid-line strong { color: #ffffff; }
 .text-button { border: 0; color: #ffffff; background: none; padding: 0; font: 500 10px 'DM Mono', monospace; text-decoration: underline; }
+.text-button:disabled { color: var(--muted); text-decoration: none; }
 .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px 10px; margin-top: 26px; }
 .stats-grid strong { display: block; color: #ffffff; font: 700 28px 'Caveat', cursive; }
 .stats-grid span { display: block; color: var(--muted); font: 400 9px/1.3 'DM Mono', monospace; text-transform: uppercase; }
@@ -114,22 +125,29 @@ h1 { font-size: clamp(72px, 14vw, 166px); }
 .game-view[hidden], .setup-view[hidden] { display: none; }
 .game-layout { display: grid; grid-template-columns: minmax(420px, 1fr) 280px; gap: clamp(42px, 9vw, 130px); align-items: start; }
 .board-wrap { min-width: 0; }
-.call-block-wide { padding: 17px 0 25px; border-top: 1px solid #ffffff; border-bottom: 1px solid #ffffff; }
+.call-block-wide { padding: 17px 0 25px; border-top: 1px solid #ffffff; border-bottom: 1px solid #ffffff; max-width: 560px; margin: 28px auto 0; text-align: center; }
+.game-view.bot-game { display: grid; justify-items: center; }
+.game-view.bot-game .game-topline { width: min(560px, 100%); }
+.turn-banner { width: min(560px, 100%); margin: 0 0 22px; color: #ffffff; font: 700 clamp(22px, 4vw, 34px)/1 'Manrope', sans-serif; letter-spacing: -0.04em; text-align: center; text-transform: uppercase; }
+.board-meta { display: flex; justify-content: space-between; margin-top: 12px; color: var(--muted); font: 500 11px 'DM Mono', monospace; text-transform: uppercase; }
 .number-picker { display: grid; grid-template-columns: repeat(13, minmax(30px, 1fr)); gap: 5px; margin: 16px 0; }
 .pick-number { min-height: 36px; }
 .pick-number:hover:not(:disabled), .pick-number.called { background: #ffffff; color: #000000; }
 .pick-number.called { opacity: .38; }
 .game-view .call-block p { color: var(--muted); font: 400 11px/1.6 'DM Mono', monospace; margin: 0; }
-.players-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px; margin-top: 34px; }
+.players-grid { display: flex; justify-content: center; width: 100%; margin-top: 0; }
 .player-card { min-width: 0; }
-.player-card.active-player { border-top: 3px solid #ffffff; padding-top: 14px; }
+.player-card.bot-solo { width: min(560px, 100%); }
+.player-card.active-player .bingo-board { box-shadow: 0 0 0 1px #ffffff; }
 .player-card-head strong { display: block; color: #ffffff; font: 500 12px 'DM Mono', monospace; margin-top: 7px; }
 .line-count { color: var(--muted); font: 500 11px 'DM Mono', monospace; text-transform: uppercase; }
-.bingo-letters { display: flex; gap: 8px; }
-.bingo-letters span { position: relative; color: #ffffff; font: 700 27px/1 'Caveat', cursive; }
+.bingo-letters { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin-bottom: 8px; }
+.bingo-letters span { position: relative; color: #ffffff; font: 700 27px/1 'Caveat', cursive; text-align: center; }
 .bingo-letters .scratched { color: #666666; }
 .bingo-letters .scratched::after { content: ''; position: absolute; left: -3px; right: -3px; top: 52%; height: 2px; background: #ffffff; transform: rotate(-25deg); }
-.game-actions { margin-top: 35px; }
+.game-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; width: min(560px, 100%); margin-top: 35px; }
+.game-view .call-block .panel-label { justify-content: center; gap: 18px; }
+.game-view #current-call { color: #ffffff; font: 700 22px 'DM Mono', monospace; }
 .board-heading { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px; font: 400 11px 'DM Mono', monospace; text-transform: uppercase; }
 .board-label { display: flex; gap: 14px; align-items: center; }
 .section-number { color: var(--muted); }
@@ -182,7 +200,7 @@ h1 { font-size: clamp(72px, 14vw, 166px); }
   .app-shell { width: min(100% - 28px, 520px); padding-top: 18px; }
   .hero { padding: 62px 0 52px; }
   .number-picker { grid-template-columns: repeat(5, 1fr); }
-  .players-grid { grid-template-columns: 1fr; }
+  .form-actions .button { min-width: 100%; }
   .game-layout { grid-template-columns: 1fr; gap: 48px; }
   .setup-footer, .game-topline { align-items: start; flex-direction: column; }
   .turn-readout { text-align: left; }
