@@ -402,9 +402,6 @@ function renderGame() {
   callMessageElement.textContent = game.winner ? 'The board is locked.' : botThinking ? 'BOT IS THINKING...' : botChose ? `The bot played ${game.currentCall}.` : 'Choose any available number.';
   playersGridElement.innerHTML = '';
   playersGridElement.append(createPlayerCard(game.players[0], 0));
-  if (game.players[1]) {
-    playersGridElement.append(createPlayerCard(game.players[1], 1));
-  }
 }
 
 function createPlayerCard(player, playerIndex) {
